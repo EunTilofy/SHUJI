@@ -16,15 +16,14 @@
         <span>数迹</span>
       </a>
       <div class="top-actions">
+        <button class="text-button theme-button" id="themeButton" aria-label="切换浅色模式">☀ 浅色</button>
         <button class="text-button" id="helpButton">玩法</button>
-        <button class="text-button" id="archiveButton">往期赛果</button>
       </div>
     </header>
 
     <main>
       <section class="hero panel" id="homeView">
         <div class="eyebrow"><span></span> DIGIT TRAILS</div>
-        <h1>循迹数字之间，<br><em>找到所有答案。</em></h1>
         <p class="hero-copy">每次猜测都会同时照亮多条线索。独自破局，或邀请朋友进入同一房间实时竞速。</p>
         <div class="mode-tabs">
           <button class="mode-tab active" data-mode="solo">独自挑战</button>
@@ -32,10 +31,14 @@
           <button class="mode-tab" data-mode="join">加入房间</button>
         </div>
         <form id="startForm" class="setup-form">
-          <label class="field">
-            <span>你的昵称</span>
+          <label class="field" id="identityField">
+            <span>玩家 ID <small>同一 IP 首次设置后固定</small></span>
             <input id="nameInput" maxlength="16" value="玩家" autocomplete="nickname">
           </label>
+          <div class="fixed-identity hidden" id="fixedIdentity">
+            <span>固定玩家 ID</span>
+            <strong id="fixedIdentityName"></strong>
+          </div>
           <label class="field join-only hidden">
             <span>房间代码</span>
             <input id="codeInput" maxlength="6" placeholder="例如 8K2JXM" autocomplete="off">
@@ -61,7 +64,8 @@
 
       <section class="game-shell hidden" id="gameView">
         <div class="game-heading">
-          <div>
+          <div class="game-title">
+            <button class="back-button" id="backButton">← 返回</button>
             <div class="eyebrow"><span></span> <b id="roomLabel">单人挑战</b></div>
             <h2>追踪全部数字</h2>
           </div>

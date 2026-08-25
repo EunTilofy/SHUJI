@@ -40,14 +40,16 @@ function request(event, payload) {
   });
 }
 
-function sessionKey(room) {
-  return `shuji:${room.code}`;
-}
-
-function saveSession(room) {
-  if (room.viewer?.token) {
-    localStorage.setItem(sessionKey(room), JSON.stringify({ code: room.code, token: room.viewer.token }));
-    localStorage.setItem('shuji:last-session', sessionKey(room));
+async function loadFixedIdentity() {
+  try {
+    const response = await request('identity:get', {});
+    if (!response.name) return;
+    elements.name.value = response.name;
+    $('#fixedIdentityName').textContent = response.name;
+    $('#identityField').classList.add('hidden');
+    $('#fixedIdentity').classList.remove('hidden');
+  } catch {
+    // The editable field remains available if identity lookup is temporarily unavailable.
   }
 }
 
@@ -66,6 +68,16 @@ function updatePreview() {
 function showGame() {
   elements.home.classList.add('hidden');
   elements.game.classList.remove('hidden');
+}
+
+function setBoardSize(room) {
+  const available = Math.min(window.innerWidth - 48, 1240);
+  const boardGaps = Math.max(0, room.targetCount - 1) * 12;
+  const cellGaps = room.targetCount * Math.max(0, room.length - 1) * 2;
+  const size = Math.max(18, Math.min(28,
+    Math.floor((available - boardGaps - cellGaps) / (room.targetCount * room.length))));
+  elements.boards.style.setProperty('--tile-size', `${size}px`);
+  elements.resultBoards.style.setProperty('--tile-size', `${size}px`);
 }
 
 function createTileRow(value, feedback, length, locked = false) {
@@ -131,8 +143,9 @@ function renderStatus(room) {
   elements.status.replaceChildren();
   room.players.forEach((player, index) => {
     const chip = document.createElement('div');
-    chip.className = `rank-chip${player.id === room.viewerId ? ' me' : ''}`;
-    chip.innerHTML = `<b>#${index + 1}</b>${escapeHtml(player.name)} · ${player.solvedCount}/${room.targetCount} · ${player.guessesUsed}轮`;
+    chip.className = `rank-chip${player.id === room.viewerId ? ' me' : ''}${player.failed ? ' failed' : ''}`;
+    const progress = player.failed ? '已失败' : `${player.solvedCount}/${room.targetCount} · ${player.guessesUsed}轮`;
+    chip.innerHTML = `<b>#${index + 1}</b>${escapeHtml(player.name)} · ${progress}`;
     elements.status.appendChild(chip);
   });
 }
@@ -157,9 +170,9 @@ function renderResults(room) {
   elements.results.classList.remove('hidden');
   const own = room.players.find((player) => player.id === room.viewerId) || room.players[0];
   const won = own?.solvedCount === room.targetCount;
-  $('#resultTitle').textContent = won ? '全部轨迹已找到' : '追迹告一段落';
+  $('#resultTitle').textContent = own?.failed ? '已退出，本局失败' : won ? '全部轨迹已找到' : '追迹告一段落';
   $('#resultCopy').textContent = room.mode === 'multi'
-    ? '点击玩家昵称，查看每个人留下的完整推理轨迹。'
+    ? '点击玩家 ID，查看每个人留下的完整推理轨迹。'
     : `${own?.guessesUsed || 0} 轮猜测，${own?.solvedCount || 0} 个目标被成功锁定。`;
 
   elements.resultTabs.replaceChildren();
@@ -167,7 +180,7 @@ function renderResults(room) {
     const button = document.createElement('button');
     const selectedId = state.selectedResultPlayer || own.id;
     button.className = `result-tab${selectedId === player.id ? ' active' : ''}`;
-    button.textContent = `#${index + 1} ${player.name} · ${player.solvedCount}/${room.targetCount}`;
+    button.textContent = `#${index + 1} ${player.name} · ${player.failed ? '失败' : `${player.solvedCount}/${room.targetCount}`}`;
     button.addEventListener('click', () => {
       state.selectedResultPlayer = player.id;
       renderResults(room);
@@ -188,8 +201,9 @@ function renderResults(room) {
 
 function applyRoom(room) {
   state.room = room;
-  saveSession(room);
   showGame();
+  setBoardSize(room);
+  elements.name.value = room.viewer?.name || elements.name.value;
   elements.roomLabel.textContent = room.mode === 'solo' ? '单人挑战' : `房间 ${room.code}`;
   elements.roundLimit.textContent = room.roundLimit;
   elements.targetCount.textContent = room.targetCount;
@@ -274,11 +288,19 @@ elements.guessForm.addEventListener('submit', async (event) => {
 
 socket.on('room:update', applyRoom);
 
-$('#homeButton').addEventListener('click', () => {
-  if (state.room) localStorage.removeItem(sessionKey(state.room));
-  localStorage.removeItem('shuji:last-session');
-  location.reload();
-});
+async function leaveAndReturnHome() {
+  if (state.room?.viewer?.token) {
+    try {
+      await request('room:leave', { code: state.room.code, token: state.room.viewer.token });
+    } catch {
+      // Navigating away disconnects the socket and applies the same failure rule.
+    }
+  }
+  location.href = '/';
+}
+
+$('#homeButton').addEventListener('click', leaveAndReturnHome);
+$('#backButton').addEventListener('click', leaveAndReturnHome);
 
 $('#helpButton').addEventListener('click', () => {
   elements.dialogContent.innerHTML = `
@@ -290,51 +312,29 @@ $('#helpButton').addEventListener('click', () => {
   elements.dialog.showModal();
 });
 
-$('#archiveButton').addEventListener('click', async () => {
-  try {
-    const results = await (await fetch('/api/results')).json();
-    elements.dialogContent.innerHTML = '<h2>往期赛果</h2>';
-    const list = document.createElement('div');
-    list.className = 'archive-list';
-    if (!results.length) list.innerHTML = '<p>还没有完成的比赛。</p>';
-    results.forEach((result) => {
-      const button = document.createElement('button');
-      button.className = 'archive-item';
-      button.innerHTML = `<span><b>${escapeHtml(result.code)}</b><br><small>${result.targetCount} 个 ${result.length} 位数字 · ${result.playerCount} 人</small></span><small>${new Date(result.finishedAt).toLocaleString()}</small>`;
-      button.addEventListener('click', async () => {
-        const detail = await (await fetch(`/api/results/${encodeURIComponent(result.code)}`)).json();
-        state.room = { ...detail, status: 'finished', viewerId: detail.players[0]?.id };
-        state.selectedResultPlayer = detail.players[0]?.id;
-        elements.dialog.close();
-        showGame();
-        renderResults(state.room);
-      });
-      list.appendChild(button);
-    });
-    elements.dialogContent.appendChild(list);
-    elements.dialog.showModal();
-  } catch {
-    showToast('暂时无法读取赛果', true);
-  }
-});
-
 $$('[data-close]').forEach((button) => button.addEventListener('click', () => elements.dialog.close()));
 elements.dialog.addEventListener('click', (event) => {
   if (event.target === elements.dialog) elements.dialog.close();
 });
 
-async function resumeLastSession() {
-  const key = localStorage.getItem('shuji:last-session');
-  if (!key) return;
-  const saved = JSON.parse(localStorage.getItem(key) || 'null');
-  if (!saved) return;
-  try {
-    applyRoom((await request('room:resume', saved)).room);
-  } catch {
-    localStorage.removeItem(key);
-    localStorage.removeItem('shuji:last-session');
-  }
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  const light = theme === 'light';
+  $('#themeButton').textContent = light ? '☾ 深色' : '☀ 浅色';
+  $('#themeButton').setAttribute('aria-label', light ? '切换深色模式' : '切换浅色模式');
+  document.querySelector('meta[name="theme-color"]').content = light ? '#f5f8fb' : '#0a0f1b';
 }
 
+$('#themeButton').addEventListener('click', () => {
+  const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+  localStorage.setItem('shuji:theme', next);
+  applyTheme(next);
+});
+
+window.addEventListener('resize', () => {
+  if (state.room) setBoardSize(state.room);
+});
+
+applyTheme(localStorage.getItem('shuji:theme') || 'dark');
 updatePreview();
-socket.on('connect', resumeLastSession);
+socket.on('connect', loadFixedIdentity);

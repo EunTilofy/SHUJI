@@ -19,31 +19,45 @@ const {
 const PORT = Number(process.env.PORT) || 6357;
 const HOST = process.env.HOST || '0.0.0.0';
 const DATA_DIR = path.join(__dirname, 'data');
-const RESULTS_FILE = path.join(DATA_DIR, 'results.json');
+const IDENTITIES_FILE = path.join(DATA_DIR, 'identities.json');
 const rooms = new Map();
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
-function readResults() {
+function readIdentities() {
   try {
-    return JSON.parse(fs.readFileSync(RESULTS_FILE, 'utf8'));
+    return new Map(Object.entries(JSON.parse(fs.readFileSync(IDENTITIES_FILE, 'utf8'))));
   } catch (error) {
-    if (error.code === 'ENOENT') return [];
+    if (error.code === 'ENOENT') return new Map();
     throw error;
   }
 }
 
-let finishedResults = readResults();
+const identities = readIdentities();
 
-function persistResults() {
-  const temporary = `${RESULTS_FILE}.tmp`;
-  fs.writeFileSync(temporary, JSON.stringify(finishedResults.slice(0, 100), null, 2));
-  fs.renameSync(temporary, RESULTS_FILE);
+function persistIdentities() {
+  const temporary = `${IDENTITIES_FILE}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(Object.fromEntries(identities), null, 2));
+  fs.renameSync(temporary, IDENTITIES_FILE);
 }
 
 function cleanName(value) {
   const name = String(value || '').trim().replace(/\s+/g, ' ');
-  if (!name || name.length > 16) throw new Error('昵称需要为 1 到 16 个字符');
+  if (!name || name.length > 16) throw new Error('玩家 ID 需要为 1 到 16 个字符');
+  return name;
+}
+
+function clientIp(socket) {
+  return String(socket.handshake.address || '').replace(/^::ffff:/, '');
+}
+
+function fixedName(socket, requestedName) {
+  const ip = clientIp(socket);
+  const existing = identities.get(ip);
+  if (existing) return existing;
+  const name = cleanName(requestedName);
+  identities.set(ip, name);
+  persistIdentities();
   return name;
 }
 
@@ -93,19 +107,6 @@ function finishRoom(room) {
   if (room.status === 'finished') return;
   room.status = 'finished';
   room.finishedAt = Date.now();
-  finishedResults.unshift({
-    code: room.code,
-    mode: room.mode,
-    targetCount: room.targetCount,
-    length: room.length,
-    roundLimit: room.roundLimit,
-    createdAt: room.createdAt,
-    finishedAt: room.finishedAt,
-    secrets: room.secrets,
-    players: playerRank(room.players.values()).map((player) => publicPlayer(player, true))
-  });
-  finishedResults = finishedResults.slice(0, 100);
-  persistResults();
 }
 
 function maybeFinishRoom(room) {
@@ -122,7 +123,6 @@ function findPlayer(room, token) {
 function addPlayer(room, name, socket) {
   if (room.status !== 'lobby') throw new Error('游戏已经开始，无法加入');
   if (room.players.size >= 30) throw new Error('房间人数已满');
-  if ([...room.players.values()].some((player) => player.name === name)) throw new Error('房间内已有相同昵称');
 
   const player = createPlayer(randomId(8), name, room.targetCount);
   player.token = randomId();
@@ -130,6 +130,20 @@ function addPlayer(room, name, socket) {
   room.players.set(player.id, player);
   socket.join(room.code);
   return player;
+}
+
+function leaveRoom(room, player) {
+  player.connected = false;
+  player.socketId = null;
+  if (room.status === 'lobby') {
+    room.players.delete(player.id);
+    if (room.hostId === player.id) room.hostId = room.players.keys().next().value || null;
+    if (!room.players.size) rooms.delete(room.code);
+  } else if (room.status === 'playing' && !player.finishedAt) {
+    player.failed = true;
+    player.finishedAt = Date.now();
+    maybeFinishRoom(room);
+  }
 }
 
 function newRoom({ code, mode, targetCount, length, status }) {
@@ -160,20 +174,6 @@ app.get('/api/health', (_request, response) => {
   response.json({ ok: true, rooms: rooms.size, uptime: Math.floor(process.uptime()) });
 });
 
-app.get('/api/results', (_request, response) => {
-  response.json(finishedResults.slice(0, 20).map(({ secrets, players, ...result }) => ({
-    ...result,
-    playerCount: players.length
-  })));
-});
-
-app.get('/api/results/:code', (request, response) => {
-  const code = request.params.code.toUpperCase();
-  const result = finishedResults.find((item) => item.code === code);
-  if (!result) return response.status(404).json({ error: '未找到该场比赛' });
-  return response.json(result);
-});
-
 io.on('connection', (socket) => {
   const handle = (callback, action) => {
     try {
@@ -182,6 +182,10 @@ io.on('connection', (socket) => {
       callback({ ok: false, error: error.message || '操作失败' });
     }
   };
+
+  socket.on('identity:get', (_payload, callback) => {
+    callback({ ok: true, name: identities.get(clientIp(socket)) || null });
+  });
 
   socket.on('game:solo', (payload, callback) => handle(callback, () => {
     const targetCount = Number(payload.targetCount);
@@ -194,7 +198,7 @@ io.on('connection', (socket) => {
       length,
       status: 'lobby'
     });
-    const player = addPlayer(room, cleanName(payload.name || '独行玩家'), socket);
+    const player = addPlayer(room, fixedName(socket, payload.name || '独行玩家'), socket);
     room.hostId = player.id;
     room.status = 'playing';
     rooms.set(room.code, room);
@@ -212,7 +216,7 @@ io.on('connection', (socket) => {
       length,
       status: 'lobby'
     });
-    const player = addPlayer(room, cleanName(payload.name), socket);
+    const player = addPlayer(room, fixedName(socket, payload.name), socket);
     room.hostId = player.id;
     rooms.set(room.code, room);
     callback({ ok: true, room: serializeRoom(room, player.id) });
@@ -222,19 +226,7 @@ io.on('connection', (socket) => {
   socket.on('room:join', (payload, callback) => handle(callback, () => {
     const room = rooms.get(String(payload.code || '').trim().toUpperCase());
     if (!room || room.mode !== 'multi') throw new Error('房间不存在或已失效');
-    const player = addPlayer(room, cleanName(payload.name), socket);
-    callback({ ok: true, room: serializeRoom(room, player.id) });
-    emitRoom(room);
-  }));
-
-  socket.on('room:resume', (payload, callback) => handle(callback, () => {
-    const room = rooms.get(String(payload.code || '').trim().toUpperCase());
-    if (!room) throw new Error('房间已失效');
-    const player = findPlayer(room, String(payload.token || ''));
-    if (!player) throw new Error('无法恢复这局游戏');
-    player.connected = true;
-    player.socketId = socket.id;
-    socket.join(room.code);
+    const player = addPlayer(room, fixedName(socket, payload.name), socket);
     callback({ ok: true, room: serializeRoom(room, player.id) });
     emitRoom(room);
   }));
@@ -260,13 +252,21 @@ io.on('connection', (socket) => {
     emitRoom(room);
   }));
 
+  socket.on('room:leave', (payload, callback) => handle(callback, () => {
+    const room = rooms.get(String(payload.code || '').toUpperCase());
+    const player = room && findPlayer(room, String(payload.token || ''));
+    if (!room || !player) throw new Error('房间验证失败');
+    leaveRoom(room, player);
+    callback({ ok: true });
+    if (rooms.has(room.code)) emitRoom(room);
+  }));
+
   socket.on('disconnect', () => {
     for (const room of rooms.values()) {
       const player = [...room.players.values()].find((item) => item.socketId === socket.id);
       if (!player) continue;
-      player.connected = false;
-      player.socketId = null;
-      emitRoom(room);
+      leaveRoom(room, player);
+      if (rooms.has(room.code)) emitRoom(room);
       break;
     }
   });

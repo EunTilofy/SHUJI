@@ -61,6 +61,7 @@ function createPlayer(id, name, targetCount) {
     id,
     name,
     connected: true,
+    failed: false,
     joinedAt: Date.now(),
     finishedAt: null,
     guesses: [],
@@ -96,6 +97,7 @@ function publicPlayer(player, revealHistory = false) {
     id: player.id,
     name: player.name,
     connected: player.connected,
+    failed: player.failed,
     guessesUsed: player.guesses.length,
     solvedCount: player.solved.filter(Boolean).length,
     solved: player.solved,
@@ -108,6 +110,7 @@ function publicPlayer(player, revealHistory = false) {
 
 function playerRank(players) {
   return [...players].sort((left, right) => {
+    if (left.failed !== right.failed) return left.failed ? 1 : -1;
     const leftSolved = left.solved.filter(Boolean).length;
     const rightSolved = right.solved.filter(Boolean).length;
     if (rightSolved !== leftSolved) return rightSolved - leftSolved;
