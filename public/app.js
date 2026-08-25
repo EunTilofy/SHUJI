@@ -254,12 +254,35 @@ elements.begin.addEventListener('click', async () => {
   }
 });
 
+async function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Fall back for browsers that expose the API but deny clipboard permission.
+    }
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  textarea.setSelectionRange(0, text.length);
+  const copied = document.execCommand('copy');
+  textarea.remove();
+  if (!copied) throw new Error('浏览器拒绝了剪贴板访问');
+}
+
 elements.copyCode.addEventListener('click', async () => {
   try {
-    await navigator.clipboard.writeText(state.room.code);
-    showToast('房间代码已复制');
-  } catch {
-    showToast(`房间代码：${state.room.code}`);
+    await copyText(state.room.code);
+    showToast(`房间号 ${state.room.code} 已复制`);
+  } catch (error) {
+    showToast(`${error.message}，请长按房间号手动复制`, true);
   }
 });
 
