@@ -6,6 +6,8 @@ const MIN_TARGETS = 1;
 const MAX_TARGETS = 6;
 const MIN_LENGTH = 3;
 const MAX_LENGTH = 10;
+const MIN_ROUNDS = 4;
+const MAX_ROUNDS = 30;
 
 function validateConfig(targetCount, length) {
   if (!Number.isInteger(targetCount) || targetCount < MIN_TARGETS || targetCount > MAX_TARGETS) {
@@ -19,7 +21,13 @@ function validateConfig(targetCount, length) {
 function calculateRoundLimit(targetCount, length) {
   validateConfig(targetCount, length);
   // Add duplicate-placement uncertainty, one finishing guess per target, and a human-play buffer.
-  return Math.min(24, Math.max(6, targetCount + Math.ceil(Math.log2(length)) + 3));
+  return Math.min(MAX_ROUNDS, Math.max(MIN_ROUNDS, targetCount + Math.ceil(Math.log2(length)) + 6));
+}
+
+function validateRoundLimit(roundLimit) {
+  if (!Number.isInteger(roundLimit) || roundLimit < MIN_ROUNDS || roundLimit > MAX_ROUNDS) {
+    throw new Error(`最大轮次必须在 ${MIN_ROUNDS} 到 ${MAX_ROUNDS} 之间`);
+  }
 }
 
 function scoreGuess(secret, guess) {
@@ -130,5 +138,6 @@ module.exports = {
   publicPlayer,
   scoreGuess,
   submitGuess,
-  validateConfig
+  validateConfig,
+  validateRoundLimit
 };

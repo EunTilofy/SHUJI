@@ -13,7 +13,8 @@ const {
   playerRank,
   publicPlayer,
   submitGuess,
-  validateConfig
+  validateConfig,
+  validateRoundLimit
 } = require('./src/game');
 
 const PORT = Number(process.env.PORT) || 6357;
@@ -133,6 +134,10 @@ function addPlayer(room, name, socket) {
 }
 
 function leaveRoom(room, player) {
+  if (player.disconnectTimer) {
+    clearTimeout(player.disconnectTimer);
+    player.disconnectTimer = null;
+  }
   player.connected = false;
   player.socketId = null;
   if (room.status === 'lobby') {
@@ -146,7 +151,28 @@ function leaveRoom(room, player) {
   }
 }
 
-function newRoom({ code, mode, targetCount, length, status }) {
+function disconnectPlayer(room, player) {
+  player.connected = false;
+  player.socketId = null;
+  if (room.status === 'lobby') {
+    player.disconnectTimer = setTimeout(() => {
+      if (room.status !== 'lobby' || player.connected) return;
+      leaveRoom(room, player);
+      if (rooms.has(room.code)) emitRoom(room);
+    }, 30_000);
+    player.disconnectTimer.unref();
+  } else if (room.status === 'playing' && !player.finishedAt) {
+    player.failed = true;
+    player.finishedAt = Date.now();
+    maybeFinishRoom(room);
+  }
+}
+
+function newRoom({ code, mode, targetCount, length, roundLimit, status }) {
+  const effectiveRoundLimit = Number.isInteger(roundLimit)
+    ? roundLimit
+    : calculateRoundLimit(targetCount, length);
+  validateRoundLimit(effectiveRoundLimit);
   return {
     code,
     mode,
@@ -154,7 +180,7 @@ function newRoom({ code, mode, targetCount, length, status }) {
     hostId: null,
     targetCount,
     length,
-    roundLimit: calculateRoundLimit(targetCount, length),
+    roundLimit: effectiveRoundLimit,
     secrets: generateSecrets(targetCount, length),
     players: new Map(),
     createdAt: Date.now(),
@@ -190,12 +216,14 @@ io.on('connection', (socket) => {
   socket.on('game:solo', (payload, callback) => handle(callback, () => {
     const targetCount = Number(payload.targetCount);
     const length = Number(payload.length);
+    const roundLimit = Number(payload.roundLimit);
     validateConfig(targetCount, length);
     const room = newRoom({
       code: `SOLO-${randomId(4).toUpperCase()}`,
       mode: 'solo',
       targetCount,
       length,
+      roundLimit,
       status: 'lobby'
     });
     const player = addPlayer(room, fixedName(socket, payload.name || '独行玩家'), socket);
@@ -208,12 +236,14 @@ io.on('connection', (socket) => {
   socket.on('room:create', (payload, callback) => handle(callback, () => {
     const targetCount = Number(payload.targetCount);
     const length = Number(payload.length);
+    const roundLimit = Number(payload.roundLimit);
     validateConfig(targetCount, length);
     const room = newRoom({
       code: createRoomCode(),
       mode: 'multi',
       targetCount,
       length,
+      roundLimit,
       status: 'lobby'
     });
     const player = addPlayer(room, fixedName(socket, payload.name), socket);
@@ -231,12 +261,31 @@ io.on('connection', (socket) => {
     emitRoom(room);
   }));
 
+  socket.on('room:resume', (payload, callback) => handle(callback, () => {
+    const room = rooms.get(String(payload.code || '').trim().toUpperCase());
+    if (!room || room.status !== 'lobby') throw new Error('等待房间已失效');
+    const player = findPlayer(room, String(payload.token || ''));
+    if (!player) throw new Error('无法恢复等待房间');
+    if (player.disconnectTimer) {
+      clearTimeout(player.disconnectTimer);
+      player.disconnectTimer = null;
+    }
+    player.connected = true;
+    player.socketId = socket.id;
+    socket.join(room.code);
+    callback({ ok: true, room: serializeRoom(room, player.id) });
+    emitRoom(room);
+  }));
+
   socket.on('room:start', (payload, callback) => handle(callback, () => {
     const room = rooms.get(String(payload.code || '').toUpperCase());
     const player = room && findPlayer(room, String(payload.token || ''));
     if (!room || !player) throw new Error('房间验证失败');
     if (player.id !== room.hostId) throw new Error('只有房主可以开始');
     if (room.status !== 'lobby') throw new Error('游戏已经开始');
+    if ([...room.players.values()].some((item) => !item.connected)) {
+      throw new Error('有玩家正在重新连接，请稍候');
+    }
     room.status = 'playing';
     callback({ ok: true });
     emitRoom(room);
@@ -265,7 +314,7 @@ io.on('connection', (socket) => {
     for (const room of rooms.values()) {
       const player = [...room.players.values()].find((item) => item.socketId === socket.id);
       if (!player) continue;
-      leaveRoom(room, player);
+      disconnectPlayer(room, player);
       if (rooms.has(room.code)) emitRoom(room);
       break;
     }

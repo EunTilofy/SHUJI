@@ -9,10 +9,10 @@ test('duplicate digits consume only unmatched occurrences', () => {
   assert.deepEqual(scoreGuess('0012', '0000'), ['correct', 'correct', 'absent', 'absent']);
 });
 
-test('common 4 by 8 game has ten rounds', () => {
-  assert.equal(calculateRoundLimit(4, 8), 10);
-  assert.equal(calculateRoundLimit(1, 3), 6);
-  assert.equal(calculateRoundLimit(6, 10), 13);
+test('recommended rounds add three to the original formula', () => {
+  assert.equal(calculateRoundLimit(4, 8), 13);
+  assert.equal(calculateRoundLimit(1, 3), 9);
+  assert.equal(calculateRoundLimit(6, 10), 16);
 });
 
 test('solved targets stop returning feedback', () => {

@@ -52,11 +52,15 @@
               <span>数字长度 <b id="lengthValue">8</b></span>
               <input id="lengthInput" type="range" min="3" max="10" value="8">
             </label>
+            <label class="field">
+              <span>最大轮次 <b id="roundValue">13</b></span>
+              <input id="roundInput" type="range" min="4" max="30" value="13">
+            </label>
           </div>
           <div class="round-preview config-only">
-            <span>本局轮次</span>
-            <strong id="roundPreview">10</strong>
-            <small>根据信息量与目标数自动平衡</small>
+            <span>推荐轮次</span>
+            <strong id="roundPreview">13</strong>
+            <small>默认值按信息量与目标数计算，可自由调整</small>
           </div>
           <button class="primary-button" id="startButton" type="submit"><span>开始追迹</span><b>→</b></button>
         </form>

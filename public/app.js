@@ -10,7 +10,8 @@ const elements = {
   home: $('#homeView'), game: $('#gameView'), lobby: $('#lobbyView'), play: $('#playView'),
   results: $('#resultsView'), startForm: $('#startForm'), startButton: $('#startButton'),
   name: $('#nameInput'), code: $('#codeInput'), targets: $('#targetInput'), length: $('#lengthInput'),
-  targetValue: $('#targetValue'), lengthValue: $('#lengthValue'), roundPreview: $('#roundPreview'),
+  rounds: $('#roundInput'), targetValue: $('#targetValue'), lengthValue: $('#lengthValue'),
+  roundValue: $('#roundValue'), roundPreview: $('#roundPreview'),
   roomLabel: $('#roomLabel'), roundNow: $('#roundNow'), roundLimit: $('#roundLimit'),
   solvedNow: $('#solvedNow'), targetCount: $('#targetCount'), lobbyPlayers: $('#lobbyPlayerList'),
   lobbyCount: $('#lobbyCount'), copyCode: $('#copyCode'), begin: $('#beginButton'),
@@ -21,7 +22,7 @@ const elements = {
 };
 
 function calculateRoundLimit(targetCount, length) {
-  return Math.min(24, Math.max(6, targetCount + Math.ceil(Math.log2(length)) + 3));
+  return Math.min(30, Math.max(4, targetCount + Math.ceil(Math.log2(length)) + 6));
 }
 
 function showToast(message, error = false) {
@@ -62,12 +63,26 @@ function escapeHtml(value) {
 function updatePreview() {
   elements.targetValue.textContent = elements.targets.value;
   elements.lengthValue.textContent = elements.length.value;
-  elements.roundPreview.textContent = calculateRoundLimit(Number(elements.targets.value), Number(elements.length.value));
+  const recommended = calculateRoundLimit(Number(elements.targets.value), Number(elements.length.value));
+  elements.rounds.value = recommended;
+  elements.roundValue.textContent = recommended;
+  elements.roundPreview.textContent = recommended;
 }
 
 function showGame() {
   elements.home.classList.add('hidden');
   elements.game.classList.remove('hidden');
+}
+
+function updateLobbySession(room) {
+  if (room.status === 'lobby' && room.viewer?.token) {
+    sessionStorage.setItem('shuji:lobby', JSON.stringify({
+      code: room.code,
+      token: room.viewer.token
+    }));
+  } else {
+    sessionStorage.removeItem('shuji:lobby');
+  }
 }
 
 function setBoardSize(room) {
@@ -201,6 +216,7 @@ function renderResults(room) {
 
 function applyRoom(room) {
   state.room = room;
+  updateLobbySession(room);
   showGame();
   setBoardSize(room);
   elements.name.value = room.viewer?.name || elements.name.value;
@@ -227,6 +243,9 @@ $$('.mode-tab').forEach((button) => {
 });
 
 [elements.targets, elements.length].forEach((input) => input.addEventListener('input', updatePreview));
+elements.rounds.addEventListener('input', () => {
+  elements.roundValue.textContent = elements.rounds.value;
+});
 elements.startForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   elements.startButton.disabled = true;
@@ -235,6 +254,7 @@ elements.startForm.addEventListener('submit', async (event) => {
       name: elements.name.value,
       targetCount: Number(elements.targets.value),
       length: Number(elements.length.value),
+      roundLimit: Number(elements.rounds.value),
       code: elements.code.value
     };
     const eventName = state.mode === 'solo' ? 'game:solo' : state.mode === 'create' ? 'room:create' : 'room:join';
@@ -312,6 +332,7 @@ elements.guessForm.addEventListener('submit', async (event) => {
 socket.on('room:update', applyRoom);
 
 async function leaveAndReturnHome() {
+  sessionStorage.removeItem('shuji:lobby');
   if (state.room?.viewer?.token) {
     try {
       await request('room:leave', { code: state.room.code, token: state.room.viewer.token });
@@ -331,7 +352,7 @@ $('#helpButton').addEventListener('click', () => {
     <p>系统会生成 N 个互不相同、可含前导零的 M 位数字。每轮输入一个 M 位数字，它会同时作用于所有尚未找到的目标。</p>
     <div class="legend"><span class="green">绿色 · 数字与位置都正确</span><span class="orange">橙色 · 数字存在但位置错误</span><span class="gray">灰色 · 不存在或数量已用尽</span></div>
     <p>重复数字严格按出现次数判定。猜中一个目标后，该列整行变绿，之后不再显示提示。找到全部目标即可获胜。</p>
-    <p><b>轮次公式：</b>N + ⌈log₂(M)⌉ + 3，最少 6、最多 24。它以反馈的信息论下界为基础，再加入重复数字定位、逐个命中与人类操作余量。</p>`;
+    <p><b>推荐轮次：</b>N + ⌈log₂(M)⌉ + 6，可在 4–30 轮之间自由调整。它以反馈的信息论下界为基础，再加入重复数字定位、逐个命中与人类操作余量。</p>`;
   elements.dialog.showModal();
 });
 
@@ -348,6 +369,16 @@ function applyTheme(theme) {
   document.querySelector('meta[name="theme-color"]').content = light ? '#f5f8fb' : '#0a0f1b';
 }
 
+async function resumeLobby() {
+  const saved = JSON.parse(sessionStorage.getItem('shuji:lobby') || 'null');
+  if (!saved) return;
+  try {
+    applyRoom((await request('room:resume', saved)).room);
+  } catch {
+    sessionStorage.removeItem('shuji:lobby');
+  }
+}
+
 $('#themeButton').addEventListener('click', () => {
   const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
   localStorage.setItem('shuji:theme', next);
@@ -360,4 +391,7 @@ window.addEventListener('resize', () => {
 
 applyTheme(localStorage.getItem('shuji:theme') || 'dark');
 updatePreview();
-socket.on('connect', loadFixedIdentity);
+socket.on('connect', () => {
+  loadFixedIdentity();
+  resumeLobby();
+});
